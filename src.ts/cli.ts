@@ -18,7 +18,7 @@ async function main() {
     .option("-k, --api-key <key>", "Anthropic API key")
     .option(
       "-m, --model <model>",
-      "Model to use (default: claude-3-5-sonnet-20241022)"
+      "Model to use (default: claude-3-5-sonnet-20241022)",
     )
     .option(
       "-s, --system-prompt <prompt>",
@@ -28,6 +28,11 @@ async function main() {
       "-i, --max-images <number>",
       "Maximum number of recent images to include",
       "3",
+    )
+    .option(
+      "-d, --debug",
+      "Enable debug mode with detailed logging",
+      false
     )
     .parse(process.argv);
 
@@ -42,6 +47,7 @@ async function main() {
     model: options.model,
     systemPromptSuffix: options.systemPrompt,
     maxRecentImages: parseInt(options.maxImages),
+    debug: options.debug,
   });
 
   // Setup event handlers

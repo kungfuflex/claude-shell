@@ -1,4 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
+import {
+  BedrockRuntimeClient,
+  InvokeModelWithResponseStreamCommand,
+} from "@aws-sdk/client-bedrock-runtime";
 import * as dotenv from "dotenv";
 import { EventEmitter } from "events";
 import { promises as fs } from "fs";
@@ -16,10 +20,10 @@ class StealthBrowser {
   constructor() {
     this.cookieJar = new Map();
     this.userAgents = [
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15',
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     ];
     this.currentUserAgent = this.getRandomUserAgent();
   }
@@ -35,35 +39,42 @@ class StealthBrowser {
 
   private getCookiesForDomain(url: string): string {
     const domain = new URL(url).hostname;
-    return this.cookieJar.get(domain) || '';
+    return this.cookieJar.get(domain) || "";
   }
 
   private updateCookies(url: string, setCookieHeader: string | null): void {
     if (!setCookieHeader) return;
-    
+
     const domain = new URL(url).hostname;
-    const currentCookies = this.cookieJar.get(domain) || '';
-    
+    const currentCookies = this.cookieJar.get(domain) || "";
+
     // Handle single cookie header
-    const cookieValue = setCookieHeader.split(';')[0]; // Get only the name=value part
-    
-    this.cookieJar.set(domain, currentCookies ? `${currentCookies}; ${cookieValue}` : cookieValue);
+    const cookieValue = setCookieHeader.split(";")[0]; // Get only the name=value part
+
+    this.cookieJar.set(
+      domain,
+      currentCookies ? `${currentCookies}; ${cookieValue}` : cookieValue,
+    );
   }
 
-  public async fetch(url: string, options: RequestInit = {}): Promise<Response> {
+  public async fetch(
+    url: string,
+    options: RequestInit = {},
+  ): Promise<Response> {
     const headers = {
-      'User-Agent': this.currentUserAgent,
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.5',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'DNT': '1',
-      'Connection': 'keep-alive',
-      'Upgrade-Insecure-Requests': '1',
-      'Sec-Fetch-Dest': 'document',
-      'Sec-Fetch-Mode': 'navigate',
-      'Sec-Fetch-Site': 'none',
-      'Sec-Fetch-User': '?1',
-      'Cookie': this.getCookiesForDomain(url),
+      "User-Agent": this.currentUserAgent,
+      Accept:
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.5",
+      "Accept-Encoding": "gzip, deflate, br",
+      DNT: "1",
+      Connection: "keep-alive",
+      "Upgrade-Insecure-Requests": "1",
+      "Sec-Fetch-Dest": "document",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Site": "none",
+      "Sec-Fetch-User": "?1",
+      Cookie: this.getCookiesForDomain(url),
       ...options.headers,
     };
 
@@ -73,7 +84,7 @@ class StealthBrowser {
     });
 
     // Update cookies from response
-    const setCookieHeader = response.headers.get('set-cookie');
+    const setCookieHeader = response.headers.get("set-cookie");
     this.updateCookies(url, setCookieHeader);
 
     // Rotate user agent occasionally (20% chance)
@@ -115,11 +126,21 @@ export interface ShellOptions {
   model?: string;
   systemPromptSuffix?: string;
   maxRecentImages?: number;
+  useBedrock?: boolean;
+  debug?: boolean;
 }
 
 const DEFAULT_MODEL = "claude-3-5-sonnet-20241022";
+const DEFAULT_BEDROCK_MODEL = "us.anthropic.claude-3-5-sonnet-20241022-v2:0";
 const INTERRUPT_TEXT = "(user stopped or interrupted and wrote the following)";
 const INTERRUPT_TOOL_ERROR = "human stopped or interrupted tool execution";
+
+// AWS Bedrock configuration
+const AWS_CONFIG = {
+  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  region: process.env.AWS_DEFAULT_REGION,
+};
 
 type StreamEvent = {
   type: string;
@@ -145,7 +166,18 @@ interface ConversationMessage {
 }
 
 export class Shell extends EventEmitter {
+  private logDebug(message: string, data?: any): void {
+    if (this.debug) {
+      const timestamp = new Date().toISOString();
+      const debugMessage = `[DEBUG ${timestamp}] ${message}`;
+      console.log('\x1b[36m%s\x1b[0m', debugMessage); // Cyan color
+      if (data !== undefined) {
+        console.log('\x1b[36m%s\x1b[0m', JSON.stringify(data, null, 2));
+      }
+    }
+  }
   private client: Anthropic;
+  private bedrockClient: BedrockRuntimeClient;
   private messages: ConversationMessage[] = [];
   private tools: Record<string, ToolResult> = {};
   private model: string;
@@ -155,19 +187,41 @@ export class Shell extends EventEmitter {
   private isRunning: boolean = false;
   private pendingToolUseIds: string[] = [];
   private browser: StealthBrowser;
+  private useBedrock: boolean;
+  private debug: boolean;
 
   constructor(options: ShellOptions = {}) {
     super();
     this.configDir = path.join(homedir(), ".anthropic");
-    this.model = options.model || DEFAULT_MODEL;
+
+    // If AWS credentials are available and useBedrock is true, default to Bedrock
+    const hasAwsCredentials =
+      AWS_CONFIG.accessKeyId && AWS_CONFIG.secretAccessKey && AWS_CONFIG.region;
+
+    this.useBedrock = Boolean(hasAwsCredentials);
+
+    // Set model based on client type
+    if (this.useBedrock) {
+      this.model = options.model || DEFAULT_BEDROCK_MODEL;
+      this.bedrockClient = new BedrockRuntimeClient({
+        credentials: {
+          accessKeyId: AWS_CONFIG.accessKeyId!,
+          secretAccessKey: AWS_CONFIG.secretAccessKey!,
+        },
+        region: AWS_CONFIG.region,
+      });
+    } else {
+      this.model = options.model || DEFAULT_MODEL;
+      const apiKey = options.apiKey || process.env.ANTHROPIC_API_KEY;
+      if (apiKey) {
+        this.client = new Anthropic({ apiKey });
+      }
+    }
+
     this.maxRecentImages = options.maxRecentImages || 3;
     this.systemPromptSuffix = options.systemPromptSuffix || "";
+    this.debug = options.debug || false;
     this.browser = new StealthBrowser();
-
-    const apiKey = options.apiKey || process.env.ANTHROPIC_API_KEY;
-    if (apiKey) {
-      this.client = new Anthropic({ apiKey });
-    }
   }
 
   /**
@@ -176,7 +230,10 @@ export class Shell extends EventEmitter {
    * @param options Optional fetch options
    * @returns Promise<Response>
    */
-  public async stealthFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  public async stealthFetch(
+    url: string,
+    options: RequestInit = {},
+  ): Promise<Response> {
     return this.browser.fetch(url, options);
   }
 
@@ -190,6 +247,15 @@ export class Shell extends EventEmitter {
   }
 
   private async ensureClient(): Promise<void> {
+    if (this.useBedrock) {
+      if (!this.bedrockClient) {
+        throw new Error(
+          "AWS credentials not found. Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_DEFAULT_REGION environment variables.",
+        );
+      }
+      return;
+    }
+
     if (!this.client) {
       const apiKey = await this.loadFromStorage("api_key");
       if (!apiKey) {
@@ -198,6 +264,135 @@ export class Shell extends EventEmitter {
         );
       }
       this.client = new Anthropic({ apiKey });
+    }
+  }
+  private async *processBedrockStream(
+    messages: any[],
+  ): AsyncGenerator<any, void, unknown> {
+    const input = {
+      anthropic_version: "bedrock-2023-05-31",
+      max_tokens: 4096,
+      messages: messages,
+      system: this.getSystemPrompt(),
+    };
+    this.logDebug("Input", input);
+
+    const command = new InvokeModelWithResponseStreamCommand({
+      modelId: this.model,
+      contentType: "application/json",
+      accept: "application/json",
+      body: JSON.stringify(input),
+    });
+
+    try {
+      this.logDebug('Sending Bedrock command', command);
+      const response = await this.bedrockClient.send(command);
+      const stream = response.body;
+      this.logDebug('Response headers', response.$metadata);
+      this.logDebug('Stream object initialized', {
+        hasStream: !!stream,
+        streamType: stream ? typeof stream : 'undefined',
+        streamProperties: stream ? Object.keys(stream) : []
+      });
+
+      if (!stream) {
+        throw new Error("No stream received from Bedrock");
+      }
+
+      let fullMessage = "";
+      let currentMessage = "";
+      let hasStarted = false;
+
+      for await (const chunk of stream) {
+        if (chunk.chunk?.bytes) {
+          const decodedChunk = new TextDecoder().decode(chunk.chunk.bytes);
+          const parsed = JSON.parse(decodedChunk);
+          this.logDebug('Stream chunk received', parsed);  // Add logging for each chunk
+
+          if (parsed.type === "message_start") {
+            if (!hasStarted) {
+              hasStarted = true;
+              yield { type: "message_start" };
+              // Initialize the message content structure like Anthropic API
+              yield {
+                type: "content_block_start",
+                content_block: { type: "text", text: "" }
+              };
+            }
+          } else if (parsed.type === "content_block_delta" || parsed.type === "content_block") {
+            const text = parsed.type === "content_block_delta" ? 
+                        (parsed.delta?.text || "") : 
+                        (parsed.text || "");
+            fullMessage += text;
+            currentMessage += text;
+            yield {
+              type: "content_block_delta",
+              delta: {
+                type: "text_delta",
+                text: text
+              },
+              index: parsed.index || 0
+            };
+          } else if (parsed.type === "error") {
+            throw new Error(
+              `Bedrock error: ${parsed.error || "Unknown error"}`,
+            );
+          } else if (parsed.type === "tool_calls") {
+            // Emit the current message if any before tool calls
+            if (currentMessage) {
+              this.emit("message", {
+                role: "assistant",
+                content: currentMessage,
+              });
+              currentMessage = "";
+            }
+            // Format tool calls like Anthropic API
+            yield {
+              type: "tool_calls",
+              tool_calls: parsed.tool_calls.map((tool: any) => ({
+                id: tool.id,
+                type: tool.type,
+                parameters: tool.parameters
+              }))
+            };
+          } else if (parsed.type === "tool_results") {
+            yield {
+              type: "tool_results",
+              tool_results: parsed.tool_results,
+            };
+          } else if (parsed.type === "message_delta") {
+            fullMessage += parsed.delta?.text || "";
+            yield {
+              type: "content_block_delta",
+              delta: {
+                type: "text",
+                text: parsed.delta?.text || "",
+              },
+            };
+          }
+        }
+      }
+
+      // Add the complete message to conversation history
+      if (fullMessage) {
+        const message: any = {
+          role: "assistant",
+          content: fullMessage
+        };
+        this.logDebug("Message", message);
+        this.messages.push(message);
+      }
+
+      // Explicitly yield a completion event
+      yield { type: "message_stop" };
+    } catch (error) {
+      this.logDebug('Bedrock stream error', {
+        error: error.message,
+        name: error.name,
+        stack: error.stack,
+        details: error
+      });
+      throw new Error(`Bedrock stream error: ${error.message}`);
     }
   }
 
@@ -223,6 +418,7 @@ export class Shell extends EventEmitter {
   }
 
   public setToolResult(result: ToolResult, toolId?: string): void {
+    this.logDebug("Setting tool result", { toolId, result });
     if (toolId) {
       this.tools[toolId] = result;
     }
@@ -262,6 +458,7 @@ export class Shell extends EventEmitter {
     }
 
     try {
+      this.logDebug("Processing new message", { message });
       await this.ensureClient();
       this.isRunning = true;
 
@@ -283,24 +480,43 @@ export class Shell extends EventEmitter {
 
       let currentMessage = "";
 
-      const stream = await this.client.messages.create({
-        model: this.model,
-        max_tokens: 4096,
-        messages: this.messages.map((msg) => ({
-          role: msg.role,
-          content: msg.content,
-        })) as any[],
-        stream: true,
-        system: this.getSystemPrompt(),
-      });
+      const mappedMessages = this.messages.map((msg) => ({
+        role: msg.role,
+        content: msg.content,
+      })) as any[];
+
+      const stream = this.useBedrock
+        ? await this.processBedrockStream(mappedMessages)
+        : await this.client.messages.create({
+            model: this.model,
+            max_tokens: 4096,
+            messages: mappedMessages,
+            stream: true,
+            system: this.getSystemPrompt(),
+          });
 
       for await (const chunk of stream) {
         const event = chunk as StreamEvent;
 
+        // Handle stream start
         if (event.type === "message_start") {
+          spinner.text = "Claude is processing...";
           continue;
         }
 
+        // Handle stream stop
+        if (event.type === "message_stop") {
+          if (currentMessage) {
+            this.emit("message", {
+              role: "assistant",
+              content: currentMessage,
+            });
+          }
+          spinner.succeed("Claude finished responding");
+          break;
+        }
+
+        // Handle content blocks
         if (event.type === "content_block_start") {
           if (currentMessage) {
             this.emit("message", {
@@ -322,6 +538,7 @@ export class Shell extends EventEmitter {
         }
 
         if (event.error) {
+          spinner.fail(`Error: ${String(event.error)}`);
           throw new Error(String(event.error));
         }
 
@@ -334,7 +551,9 @@ export class Shell extends EventEmitter {
             currentMessage = "";
           }
 
+          spinner.text = "Claude is using tools...";
           for (const tool of event.tool_calls) {
+            this.logDebug("Tool invocation", { toolId: tool.id, type: tool.type, parameters: tool.parameters });
             this.pendingToolUseIds.push(tool.id);
             this.emit("toolUse", {
               type: "tool_use",

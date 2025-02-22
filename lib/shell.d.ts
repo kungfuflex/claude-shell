@@ -9,9 +9,13 @@ export interface ShellOptions {
     model?: string;
     systemPromptSuffix?: string;
     maxRecentImages?: number;
+    useBedrock?: boolean;
+    debug?: boolean;
 }
 export declare class Shell extends EventEmitter {
+    private logDebug;
     private client;
+    private bedrockClient;
     private messages;
     private tools;
     private model;
@@ -21,6 +25,8 @@ export declare class Shell extends EventEmitter {
     private isRunning;
     private pendingToolUseIds;
     private browser;
+    private useBedrock;
+    private debug;
     constructor(options?: ShellOptions);
     /**
      * Perform a stealth browser fetch request
@@ -36,6 +42,7 @@ export declare class Shell extends EventEmitter {
      */
     googleSearch(query: string): Promise<string>;
     private ensureClient;
+    private processBedrockStream;
     private loadFromStorage;
     private saveToStorage;
     setToolResult(result: ToolResult, toolId?: string): void;
