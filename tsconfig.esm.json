@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "es2020",
+    "lib": ["es2020"],
+    "strict": false,
+    "sourceMap": true,
+    "allowSyntheticDefaultImports": true,
+    "allowUnreachableCode": false,
+    "esModuleInterop": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "allowUnreachableCode": true,
+    "noUncheckedIndexedAccess": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": true,
+    "baseUrl": ".",
+    "module": "Node16",
+    "outDir": "lib/esm",
+    "moduleResolution": "Node16"
+  },
+  "include": ["src.ts/index.ts"],
+  "exclude": ["node_modules", "lib"]
+}
