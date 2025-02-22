@@ -8,6 +8,96 @@ import ora from "ora";
 
 dotenv.config();
 
+class StealthBrowser {
+  private cookieJar: Map<string, string>;
+  private userAgents: string[];
+  private currentUserAgent: string;
+
+  constructor() {
+    this.cookieJar = new Map();
+    this.userAgents = [
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    ];
+    this.currentUserAgent = this.getRandomUserAgent();
+  }
+
+  private getRandomUserAgent(): string {
+    const index = Math.floor(Math.random() * this.userAgents.length);
+    return this.userAgents[index];
+  }
+
+  private rotateUserAgent(): void {
+    this.currentUserAgent = this.getRandomUserAgent();
+  }
+
+  private getCookiesForDomain(url: string): string {
+    const domain = new URL(url).hostname;
+    return this.cookieJar.get(domain) || '';
+  }
+
+  private updateCookies(url: string, setCookieHeader: string | null): void {
+    if (!setCookieHeader) return;
+    
+    const domain = new URL(url).hostname;
+    const currentCookies = this.cookieJar.get(domain) || '';
+    
+    // Handle single cookie header
+    const cookieValue = setCookieHeader.split(';')[0]; // Get only the name=value part
+    
+    this.cookieJar.set(domain, currentCookies ? `${currentCookies}; ${cookieValue}` : cookieValue);
+  }
+
+  public async fetch(url: string, options: RequestInit = {}): Promise<Response> {
+    const headers = {
+      'User-Agent': this.currentUserAgent,
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.5',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'DNT': '1',
+      'Connection': 'keep-alive',
+      'Upgrade-Insecure-Requests': '1',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+      'Cookie': this.getCookiesForDomain(url),
+      ...options.headers,
+    };
+
+    const response = await fetch(url, {
+      ...options,
+      headers,
+    });
+
+    // Update cookies from response
+    const setCookieHeader = response.headers.get('set-cookie');
+    this.updateCookies(url, setCookieHeader);
+
+    // Rotate user agent occasionally (20% chance)
+    if (Math.random() < 0.2) {
+      this.rotateUserAgent();
+    }
+
+    return response;
+  }
+
+  public async searchGoogle(query: string): Promise<string> {
+    const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+    try {
+      const response = await this.fetch(searchUrl);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      return await response.text();
+    } catch (error) {
+      throw new Error(`Failed to search Google: ${error.message}`);
+    }
+  }
+}
+
 interface ToolResult {
   output?: string;
   error?: string;
@@ -64,6 +154,7 @@ export class Shell extends EventEmitter {
   private systemPromptSuffix: string;
   private isRunning: boolean = false;
   private pendingToolUseIds: string[] = [];
+  private browser: StealthBrowser;
 
   constructor(options: ShellOptions = {}) {
     super();
@@ -71,11 +162,31 @@ export class Shell extends EventEmitter {
     this.model = options.model || DEFAULT_MODEL;
     this.maxRecentImages = options.maxRecentImages || 3;
     this.systemPromptSuffix = options.systemPromptSuffix || "";
+    this.browser = new StealthBrowser();
 
     const apiKey = options.apiKey || process.env.ANTHROPIC_API_KEY;
     if (apiKey) {
       this.client = new Anthropic({ apiKey });
     }
+  }
+
+  /**
+   * Perform a stealth browser fetch request
+   * @param url The URL to fetch
+   * @param options Optional fetch options
+   * @returns Promise<Response>
+   */
+  public async stealthFetch(url: string, options: RequestInit = {}): Promise<Response> {
+    return this.browser.fetch(url, options);
+  }
+
+  /**
+   * Perform a Google search with stealth browser
+   * @param query The search query
+   * @returns Promise<string> The search results HTML
+   */
+  public async googleSearch(query: string): Promise<string> {
+    return this.browser.searchGoogle(query);
   }
 
   private async ensureClient(): Promise<void> {
@@ -264,7 +375,7 @@ export class Shell extends EventEmitter {
   }
 
   private getSystemPrompt(): string {
-    const basePrompt = `You are a helpful AI assistant that can use a computer to help users accomplish their goals. You have access to a set of tools that allow you to interact with a computer through mouse and keyboard actions, run shell commands, and manipulate files.
+    const basePrompt = `You are a helpful AI assistant that can use a computer to help users accomplish their goals. You have access to a set of tools that allow you to interact with a computer through mouse and keyboard actions, run shell commands, manipulate files, and perform web searches.
 
 Some important notes:
 - You will control a real computer, so be careful with destructive actions
@@ -272,11 +383,15 @@ Some important notes:
 - For file paths, prefer full paths starting with /
 - Wait for applications to load after starting them
 - Be patient and thorough in accomplishing the user's goals
+- You can search the web for up-to-date information using the stealthFetch and googleSearch methods
+- Web searches are done with a stealth browser that simulates real user behavior and manages cookies
 
 Your available tools are:
 1. computer - Control mouse and keyboard
 2. bash - Run shell commands 
 3. str_replace_editor - View and edit files
+4. stealthFetch - Fetch web content with browser-like behavior
+5. googleSearch - Search Google with stealth browser
 
 ${this.systemPromptSuffix}`;
 
