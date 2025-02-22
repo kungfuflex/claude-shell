@@ -350,10 +350,8 @@ export class Shell extends EventEmitter {
             fullMessage += text;
 
             // Emit just the new fragment to append
-            this.emit("append_message", {
-              role: "assistant",
-              content: text,
-            });
+            // Just append the raw text without role/formatting
+            this.emit("append_content", text);
 
             // Yield delta for stream consumers
             yield {

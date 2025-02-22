@@ -13,7 +13,8 @@ export declare class UI {
     constructor(options?: UIOptions);
     private formatMessage;
     private wordWrap;
-    addMessage(role: string, content: string | any, isAppend?: boolean): void;
+    addMessage(role: string, content: string | any): void;
+    appendContent(text: string): void;
     showLoading(): void;
     hideLoading(): void;
     clearInput(): void;

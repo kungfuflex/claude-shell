@@ -129,8 +129,8 @@ async function main() {
       ui.addMessage(role, content);
     });
 
-    shell.on("append_message", ({ role, content }) => {
-      ui.addMessage(role, content, true);
+    shell.on("append_content", (text) => {
+      ui.appendContent(text);
     });
 
     shell.on("error", (error) => {
