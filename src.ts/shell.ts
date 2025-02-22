@@ -1,11 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { Message, MessageParam } from "@anthropic-ai/sdk/types";
 import * as dotenv from "dotenv";
 import { EventEmitter } from "events";
-import ora from "ora";
 import { promises as fs } from "fs";
 import * as path from "path";
 import { homedir } from "os";
+import ora from "ora";
 
 dotenv.config();
 
@@ -28,7 +27,7 @@ export interface ShellOptions {
   maxRecentImages?: number;
 }
 
-const DEFAULT_MODEL = "claude-3-opus-20240229";
+const DEFAULT_MODEL = "claude-3-5-sonnet-20241022";
 const INTERRUPT_TEXT = "(user stopped or interrupted and wrote the following)";
 const INTERRUPT_TOOL_ERROR = "human stopped or interrupted tool execution";
 
@@ -179,7 +178,7 @@ export class Shell extends EventEmitter {
         messages: this.messages.map((msg) => ({
           role: msg.role,
           content: msg.content,
-        })) as MessageParam[],
+        })) as any[],
         stream: true,
         system: this.getSystemPrompt(),
       });

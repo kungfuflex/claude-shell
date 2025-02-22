@@ -3,15 +3,13 @@
   "version": "0.1.0",
   "description": "claude shell",
   "main": "lib/shell.js",
-  "type": "module",
   "bin": {
-    "claude-shell": "lib/cli.js"
+    "claude-shell": "bin/claude-shell.js"
   },
   "scripts": {
     "test": "ts-mocha test/**/*.spec.ts",
-    "build": "run-s build:cjs build:esm",
+    "build": "run-s build:cjs",
     "build:cjs": "tsc",
-    "build:esm": "tsc -p tsconfig.esm.json",
     "prettier": "prettier --write ./**/*.ts"
   },
   "files": [
@@ -23,14 +21,14 @@
   "license": "ISC",
   "packageManager": "pnpm@10.4.1",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.36.3",
+    "@anthropic-ai/sdk": "0.36.3",
     "@types/inquirer": "^9.0.7",
     "@types/node": "^22.13.5",
-    "chalk": "^5.4.1",
+    "chalk": "4.1.0",
     "commander": "^13.1.0",
     "dotenv": "^16.4.7",
     "inquirer": "^12.4.2",
-    "ora": "^8.2.0",
+    "ora": "5.4.1",
     "typescript": "^5.7.3"
   },
   "devDependencies": {

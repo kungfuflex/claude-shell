@@ -18,7 +18,7 @@ async function main() {
     .option("-k, --api-key <key>", "Anthropic API key")
     .option(
       "-m, --model <model>",
-      "Model to use (default: claude-3-opus-20240229)",
+      "Model to use (default: claude-3-5-sonnet-20241022)"
     )
     .option(
       "-s, --system-prompt <prompt>",
