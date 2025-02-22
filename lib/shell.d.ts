@@ -11,6 +11,7 @@ export interface ShellOptions {
     maxRecentImages?: number;
     useBedrock?: boolean;
     debug?: boolean;
+    useBlessed?: boolean;
 }
 export declare class Shell extends EventEmitter {
     private logDebug;
@@ -26,6 +27,7 @@ export declare class Shell extends EventEmitter {
     private pendingToolUseIds;
     private browser;
     private useBedrock;
+    private useBlessed;
     private debug;
     constructor(options?: ShellOptions);
     /**

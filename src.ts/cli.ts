@@ -5,6 +5,7 @@ import inquirer from "inquirer";
 import chalk from "chalk";
 import { promises as fs } from "fs";
 import { Shell } from "./shell.js";
+import { UI } from "./ui.js";
 
 // Constants
 const WARNING_TEXT =
@@ -29,17 +30,15 @@ async function main() {
       "Maximum number of recent images to include",
       "3",
     )
+    .option("-d, --debug", "Enable debug mode with detailed logging", false)
     .option(
-      "-d, --debug",
-      "Enable debug mode with detailed logging",
-      false
+      "-b, --blessed",
+      "Use blessed UI interface instead of readline",
+      false,
     )
     .parse(process.argv);
 
   const options = program.opts();
-
-  console.log(chalk.yellow(WARNING_TEXT));
-  console.log();
 
   // Initialize Shell
   const shell = new Shell({
@@ -48,39 +47,44 @@ async function main() {
     systemPromptSuffix: options.systemPrompt,
     maxRecentImages: parseInt(options.maxImages),
     debug: options.debug,
+    useBlessed: options.blessed,
   });
 
   // Setup event handlers
-  shell.on("message", ({ role, content }) => {
-    switch (role) {
-      case "user":
-        console.log(chalk.blue("You:"), content);
-        break;
-      case "assistant":
-        console.log(chalk.green("Claude:"), content);
-        break;
-      case "tool":
-        const result = content as {
-          output?: string;
-          error?: string;
-          base64_image?: string;
-        };
-        if (result.output) {
-          console.log(chalk.cyan("Tool Output:"), result.output);
-        }
-        if (result.error) {
-          console.log(chalk.red("Tool Error:"), result.error);
-        }
-        if (result.base64_image) {
-          console.log(chalk.yellow("Screenshot captured"));
-        }
-        break;
-    }
-  });
+  if (!options.blessed) {
+    shell.on("message", ({ role, content }) => {
+      switch (role) {
+        case "user":
+          console.log(chalk.blue("You:"), content);
+          break;
+        case "assistant":
+          console.log(chalk.green("Claude:"), content);
+          break;
+        case "tool":
+          const result = content as {
+            output?: string;
+            error?: string;
+            base64_image?: string;
+          };
+          if (result.output) {
+            console.log(chalk.cyan("Tool Output:"), result.output);
+          }
+          if (result.error) {
+            console.log(chalk.red("Tool Error:"), result.error);
+          }
+          if (result.base64_image) {
+            console.log(chalk.yellow("Screenshot captured"));
+          }
+          break;
+      }
+    });
+  }
 
-  shell.on("error", (error) => {
-    console.error(chalk.red("Error:"), error.message);
-  });
+  if (!options.blessed) {
+    shell.on("error", (error) => {
+      console.error(chalk.red("Error:"), error.message);
+    });
+  }
 
   // Handle tool use events by delegating to the appropriate handler
   shell.on("toolUse", async (tool) => {
@@ -103,23 +107,58 @@ async function main() {
     shell.setToolResult(result);
   });
 
-  // Interactive prompt loop
-  while (true) {
-    const { prompt } = await inquirer.prompt([
-      {
-        type: "input",
-        name: "prompt",
-        message: "Enter your request (or Ctrl+C to exit):",
-        validate: (input) =>
-          input.trim().length > 0 || "Please enter a request",
-      },
-    ]);
+  if (options.blessed) {
+    // Initialize blessed UI
+    const ui = new UI({ debug: options.debug });
 
-    if (prompt.toLowerCase() === "exit" || prompt.toLowerCase() === "quit") {
-      break;
+    // Show warning
+    ui.addMessage("system", WARNING_TEXT);
+
+    // Setup UI event handlers
+    ui.onSubmit(async (text) => {
+      if (text.toLowerCase() === "exit" || text.toLowerCase() === "quit") {
+        process.exit(0);
+      }
+      ui.showLoading();
+      await shell.processMessage(text);
+      ui.hideLoading();
+    });
+
+    // Handle shell events in UI
+    shell.on("message", ({ role, content }) => {
+      ui.addMessage(role, content);
+    });
+
+    shell.on("append_message", ({ role, content }) => {
+      ui.addMessage(role, content, true);
+    });
+
+    shell.on("error", (error) => {
+      ui.addMessage("system", chalk.red("Error: " + error.message));
+    });
+  } else {
+    // Use traditional readline interface
+    console.log(chalk.yellow(WARNING_TEXT));
+    console.log();
+
+    // Interactive prompt loop
+    while (true) {
+      const { prompt } = await inquirer.prompt([
+        {
+          type: "input",
+          name: "prompt",
+          message: "Enter your request (or Ctrl+C to exit):",
+          validate: (input) =>
+            input.trim().length > 0 || "Please enter a request",
+        },
+      ]);
+
+      if (prompt.toLowerCase() === "exit" || prompt.toLowerCase() === "quit") {
+        break;
+      }
+
+      await shell.processMessage(prompt);
     }
-
-    await shell.processMessage(prompt);
   }
 }
 
@@ -291,20 +330,35 @@ async function handleEditorTool(params: any) {
 }
 
 export async function run() {
-  // Handle interruptions gracefully
-  process.on("SIGINT", () => {
-    console.log(chalk.yellow("\nGoodbye!"));
-    process.exit(0);
-  });
+  let usingBlessed = false;
 
-  process.on("uncaughtException", (error) => {
-    console.error(chalk.red("Uncaught Exception:"), error);
-    process.exit(1);
-  });
+  // Register signal handlers
+  const signalHandler = () => {
+    if (!usingBlessed) {
+      console.log(chalk.yellow("\nGoodbye!"));
+      process.exit(0);
+    }
+  };
+
+  const errorHandler = (error: Error) => {
+    if (!usingBlessed) {
+      console.error(chalk.red("Uncaught Exception:"), error);
+      process.exit(1);
+    }
+  };
+
+  process.on("SIGINT", signalHandler);
+  process.on("uncaughtException", errorHandler);
 
   // Start the CLI
-  await main().catch((error) => {
-    console.error(chalk.red("Fatal Error:"), error);
-    process.exit(1);
-  });
+  try {
+    const options = program.opts();
+    usingBlessed = options.blessed;
+    await main();
+  } catch (error) {
+    if (!usingBlessed) {
+      console.error(chalk.red("Fatal Error:"), error);
+      process.exit(1);
+    }
+  }
 }

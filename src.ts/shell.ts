@@ -128,6 +128,7 @@ export interface ShellOptions {
   maxRecentImages?: number;
   useBedrock?: boolean;
   debug?: boolean;
+  useBlessed?: boolean;
 }
 
 const DEFAULT_MODEL = "claude-3-5-sonnet-20241022";
@@ -170,9 +171,19 @@ export class Shell extends EventEmitter {
     if (this.debug) {
       const timestamp = new Date().toISOString();
       const debugMessage = `[DEBUG ${timestamp}] ${message}`;
-      console.log('\x1b[36m%s\x1b[0m', debugMessage); // Cyan color
-      if (data !== undefined) {
-        console.log('\x1b[36m%s\x1b[0m', JSON.stringify(data, null, 2));
+      if (!this.useBlessed) {
+        console.log("\x1b[36m%s\x1b[0m", debugMessage); // Cyan color
+        if (data !== undefined) {
+          console.log("\x1b[36m%s\x1b[0m", JSON.stringify(data, null, 2));
+        }
+      }
+      // In blessed mode, emit as a message instead
+      else {
+        this.emit("message", {
+          role: "system",
+          content:
+            debugMessage + (data ? "\n" + JSON.stringify(data, null, 2) : ""),
+        });
       }
     }
   }
@@ -188,6 +199,7 @@ export class Shell extends EventEmitter {
   private pendingToolUseIds: string[] = [];
   private browser: StealthBrowser;
   private useBedrock: boolean;
+  private useBlessed: boolean;
   private debug: boolean;
 
   constructor(options: ShellOptions = {}) {
@@ -221,6 +233,7 @@ export class Shell extends EventEmitter {
     this.maxRecentImages = options.maxRecentImages || 3;
     this.systemPromptSuffix = options.systemPromptSuffix || "";
     this.debug = options.debug || false;
+    this.useBlessed = options.useBlessed || false;
     this.browser = new StealthBrowser();
   }
 
@@ -285,14 +298,14 @@ export class Shell extends EventEmitter {
     });
 
     try {
-      this.logDebug('Sending Bedrock command', command);
+      this.logDebug("Sending Bedrock command", command);
       const response = await this.bedrockClient.send(command);
       const stream = response.body;
-      this.logDebug('Response headers', response.$metadata);
-      this.logDebug('Stream object initialized', {
+      this.logDebug("Response headers", response.$metadata);
+      this.logDebug("Stream object initialized", {
         hasStream: !!stream,
-        streamType: stream ? typeof stream : 'undefined',
-        streamProperties: stream ? Object.keys(stream) : []
+        streamType: stream ? typeof stream : "undefined",
+        streamProperties: stream ? Object.keys(stream) : [],
       });
 
       if (!stream) {
@@ -300,14 +313,13 @@ export class Shell extends EventEmitter {
       }
 
       let fullMessage = "";
-      let currentMessage = "";
       let hasStarted = false;
 
       for await (const chunk of stream) {
         if (chunk.chunk?.bytes) {
           const decodedChunk = new TextDecoder().decode(chunk.chunk.bytes);
           const parsed = JSON.parse(decodedChunk);
-          this.logDebug('Stream chunk received', parsed);  // Add logging for each chunk
+          this.logDebug("Stream chunk received", parsed); // Add logging for each chunk
 
           if (parsed.type === "message_start") {
             if (!hasStarted) {
@@ -316,58 +328,60 @@ export class Shell extends EventEmitter {
               // Initialize the message content structure like Anthropic API
               yield {
                 type: "content_block_start",
-                content_block: { type: "text", text: "" }
+                content_block: { type: "text", text: "" },
               };
+              // Emit initial message to establish the timestamp
+              this.emit("message", {
+                role: "assistant",
+                content: "",
+              });
             }
-          } else if (parsed.type === "content_block_delta" || parsed.type === "content_block") {
-            const text = parsed.type === "content_block_delta" ? 
-                        (parsed.delta?.text || "") : 
-                        (parsed.text || "");
+          } else if (
+            parsed.type === "content_block_delta" ||
+            parsed.type === "content_block" ||
+            parsed.type === "message_delta"
+          ) {
+            const text =
+              parsed.type === "content_block_delta"
+                ? parsed.delta?.text || ""
+                : parsed.type === "message_delta"
+                  ? parsed.delta?.text || ""
+                  : parsed.text || "";
             fullMessage += text;
-            currentMessage += text;
+
+            // Emit just the new fragment to append
+            this.emit("append_message", {
+              role: "assistant",
+              content: text,
+            });
+
+            // Yield delta for stream consumers
             yield {
               type: "content_block_delta",
               delta: {
                 type: "text_delta",
-                text: text
+                text: text,
               },
-              index: parsed.index || 0
+              index: parsed.index || 0,
             };
           } else if (parsed.type === "error") {
             throw new Error(
               `Bedrock error: ${parsed.error || "Unknown error"}`,
             );
           } else if (parsed.type === "tool_calls") {
-            // Emit the current message if any before tool calls
-            if (currentMessage) {
-              this.emit("message", {
-                role: "assistant",
-                content: currentMessage,
-              });
-              currentMessage = "";
-            }
             // Format tool calls like Anthropic API
             yield {
               type: "tool_calls",
               tool_calls: parsed.tool_calls.map((tool: any) => ({
                 id: tool.id,
                 type: tool.type,
-                parameters: tool.parameters
-              }))
+                parameters: tool.parameters,
+              })),
             };
           } else if (parsed.type === "tool_results") {
             yield {
               type: "tool_results",
               tool_results: parsed.tool_results,
-            };
-          } else if (parsed.type === "message_delta") {
-            fullMessage += parsed.delta?.text || "";
-            yield {
-              type: "content_block_delta",
-              delta: {
-                type: "text",
-                text: parsed.delta?.text || "",
-              },
             };
           }
         }
@@ -377,7 +391,7 @@ export class Shell extends EventEmitter {
       if (fullMessage) {
         const message: any = {
           role: "assistant",
-          content: fullMessage
+          content: fullMessage,
         };
         this.logDebug("Message", message);
         this.messages.push(message);
@@ -386,11 +400,11 @@ export class Shell extends EventEmitter {
       // Explicitly yield a completion event
       yield { type: "message_stop" };
     } catch (error) {
-      this.logDebug('Bedrock stream error', {
+      this.logDebug("Bedrock stream error", {
         error: error.message,
         name: error.name,
         stack: error.stack,
-        details: error
+        details: error,
       });
       throw new Error(`Bedrock stream error: ${error.message}`);
     }
@@ -476,7 +490,10 @@ export class Shell extends EventEmitter {
       });
 
       // Start message stream
-      const spinner = ora("Claude is thinking...").start();
+      let spinner;
+      if (!this.useBlessed) {
+        spinner = ora("Claude is thinking...").start();
+      }
 
       let currentMessage = "";
 
@@ -500,19 +517,13 @@ export class Shell extends EventEmitter {
 
         // Handle stream start
         if (event.type === "message_start") {
-          spinner.text = "Claude is processing...";
+          if (spinner) spinner.text = "Claude is processing...";
           continue;
         }
 
         // Handle stream stop
         if (event.type === "message_stop") {
-          if (currentMessage) {
-            this.emit("message", {
-              role: "assistant",
-              content: currentMessage,
-            });
-          }
-          spinner.succeed("Claude finished responding");
+          if (spinner) spinner.succeed("Claude finished responding");
           break;
         }
 
@@ -530,7 +541,12 @@ export class Shell extends EventEmitter {
 
         if (event.type === "content_block_delta" && event.delta?.text) {
           currentMessage += event.delta.text;
-          spinner.text = `Claude: ${currentMessage.slice(-50)}...`;
+          if (spinner) spinner.text = `Claude: ${currentMessage.slice(-50)}...`;
+          // Emit each delta chunk as it arrives for real-time display
+          this.emit("message", {
+            role: "assistant",
+            content: event.delta.text,
+          });
         }
 
         if (event.usage_info) {
@@ -551,9 +567,13 @@ export class Shell extends EventEmitter {
             currentMessage = "";
           }
 
-          spinner.text = "Claude is using tools...";
+          if (spinner) spinner.text = "Claude is using tools...";
           for (const tool of event.tool_calls) {
-            this.logDebug("Tool invocation", { toolId: tool.id, type: tool.type, parameters: tool.parameters });
+            this.logDebug("Tool invocation", {
+              toolId: tool.id,
+              type: tool.type,
+              parameters: tool.parameters,
+            });
             this.pendingToolUseIds.push(tool.id);
             this.emit("toolUse", {
               type: "tool_use",
@@ -585,7 +605,7 @@ export class Shell extends EventEmitter {
         });
       }
 
-      spinner.stop();
+      if (spinner) spinner.stop();
     } catch (error) {
       this.emit("error", error);
     } finally {
