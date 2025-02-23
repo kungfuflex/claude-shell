@@ -29,6 +29,7 @@ export declare class Shell extends EventEmitter {
     private useBedrock;
     private useBlessed;
     private debug;
+    private parseToolCallFromText;
     constructor(options?: ShellOptions);
     /**
      * Perform a stealth browser fetch request
